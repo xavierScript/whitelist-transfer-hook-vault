@@ -4,6 +4,17 @@ This example demonstrates how to implement a transfer hook using the SPL Token 2
 
 In this example, only whitelisted addresses will be able to transfer tokens that have this transfer hook enabled, providing fine-grained access control over token movements.
 
+The latest version of the program also includes an end-to-end vault mint flow. The admin can create a Token-2022 mint with the TransferHook and MetadataPointer extensions already configured, attach token metadata directly to the mint, initialize a vault token account for that mint, and then deposit or withdraw tokens through the whitelist-checked transfer hook.
+
+## Current Flow
+
+1. Initialize the global config PDA.
+2. Add approved users to the whitelist with per-user PDA accounts.
+3. Create a vault mint with transfer hook and metadata support.
+4. Initialize the vault token account for that mint.
+5. Initialize the extra account meta list used by the transfer hook.
+6. Deposit and withdraw tokens only for whitelisted users.
+
 ---
 
 ## Architecture
@@ -328,16 +339,40 @@ In this implementation, we first verify that the hook is being called during an 
 
 The transfer hook integrates seamlessly with the SPL Token 2022 transfer process, automatically validating every transfer attempt against individual whitelist entries without requiring additional user intervention.
 
+## Vault Mint Creation
+
+The `create_vault_mint` instruction prepares a mint that is ready for the rest of the vault workflow. It:
+
+- allocates enough space for the mint, the TransferHook extension, the MetadataPointer extension, and token metadata
+- initializes the transfer hook so transfers route through this program
+- points mint metadata back to the mint account itself
+- initializes the mint with 9 decimals
+- writes token metadata fields such as name, symbol, and URI into the mint account
+- stores the mint key in the config account for later vault initialization
+
+This means the admin only needs to create the mint once, then the vault and transfer hook setup can build on top of it.
+
+## Vault Lifecycle
+
+The vault flow is split into a small set of instructions that work together:
+
+- `initialize_vault` creates the vault token account as a PDA owned by the config account and tied to the configured mint.
+- `initialize_transfer_hook` writes the extra account meta list for the mint so Token-2022 can resolve the whitelist PDA dynamically at transfer time.
+- `deposit` transfers tokens from a whitelisted user into the vault.
+- `withdraw` transfers tokens from the vault back to a whitelisted user.
+
+In the current test flow, the admin first whitelists the user and the config PDA, creates the vault mint, initializes the vault, and then performs a deposit and withdraw against that mint.
+
 ---
 
 ## Design Comparison
 
-| Aspect | Old (Vec\<Pubkey\>) | New (Per-User PDA) |
-|---|---|---|
-| Lookup cost | O(n) linear scan | O(1) — PDA exists or it doesn't |
-| Add cost | `realloc` + manual lamport transfer + push | `init` a fixed 9-byte account |
-| Remove cost | `realloc` + manual lamport refund + remove | `close` the account (rent auto-refunded) |
-| Account size | Grows without bound | Fixed 9 bytes per entry |
-| Extra account resolution | Static (hardcoded PDA) | Dynamic (per-user seed derivation at transfer time) |
+| Aspect                   | Old (Vec\<Pubkey\>)                        | New (Per-User PDA)                                  |
+| ------------------------ | ------------------------------------------ | --------------------------------------------------- |
+| Lookup cost              | O(n) linear scan                           | O(1) — PDA exists or it doesn't                     |
+| Add cost                 | `realloc` + manual lamport transfer + push | `init` a fixed 9-byte account                       |
+| Remove cost              | `realloc` + manual lamport refund + remove | `close` the account (rent auto-refunded)            |
+| Account size             | Grows without bound                        | Fixed 9 bytes per entry                             |
+| Extra account resolution | Static (hardcoded PDA)                     | Dynamic (per-user seed derivation at transfer time) |
 
 This whitelist transfer hook provides a robust, scalable access control mechanism for Token 2022 mints, ensuring that only pre-approved addresses can transfer tokens while maintaining the standard token interface that users and applications expect.
